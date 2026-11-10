@@ -11,12 +11,24 @@ assignment).  The loss is
                + alpha_anti_neg * <E^-(y) / E_tot>
                + alpha_bg     * <E_bg / E_tot>
 
-L_target is measured on the correctly placed samples only, with the mainline
-weights (alpha_ce 1e-2, alpha_anti_neg 40, alpha_bg 1e3).  ring4 is the
+L_target is measured on the correctly placed samples only.  The defaults are
+the weights the reported device was trained with: alpha_ce 300, gamma 300,
+alpha_anti_neg 40, alpha_bg 1e3 and W_INTER 1e3.  ring4 is the
 four-corner union of the 20-spot rings built with the enlarged thresholds
 (pos 0.05, neg 0.01 of the gaussian peak, radius ~11-14 px), and it is
-penalised on the misplaced samples only.  Evaluation keeps the mainline core
-masks (>0.5) so the reported numbers stay comparable with every other device.
+penalised on the misplaced samples only.  Evaluation keeps the un-enlarged
+spot masks (>0.5) so the reported numbers stay comparable with every other
+device.
+
+Why these numbers: every pass ends with clip_grad_norm_(parameters, 1.0), so
+what matters is the share of the unit step each term takes, not the loss
+values.  Measured shares are 52% classification and 38% confinement at
+alpha_ce 30, 79% and 17% at 100, and 92% and 7% at 300.  Letting the two
+conflicting gradients split the step evenly stalls both; giving classification
+the larger share improves accuracy and confinement at the same time.  With
+these defaults the device reaches 91.1% mean accuracy on the test split
+(95.5, 81.4, 87.6 and 100.0 per task, three seeds, standard deviation 0.06)
+and 91.6% with all four sub-apertures illuminated at once.
 
 The classification logits are the normalised readout s_c = S_c / E_tot, where
 S_c = E^+_c - E^-_c is the differential power on the small spots; --ce-mode
@@ -52,7 +64,7 @@ N_LAYERS = 3
 SUB_TAG = "bg1e3"
 
 W_INTER = 1000.0
-ALPHA_CE = 30.0
+ALPHA_CE = 300.0
 ALPHA_ANTI_NEG = 40.0
 ALPHA_BG = 1e3
 CE_SCALE_NORM = 3e2
@@ -213,7 +225,7 @@ def evaluate(full, ds_test, pos, neg, ring4, core4, n_per_class=20):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=1000)
-    ap.add_argument("--eval-every", type=int, default=100)
+    ap.add_argument("--eval-every", type=int, default=20)
     ap.add_argument("--save-every", type=int, default=None,
                     help="checkpoint cadence; defaults to --eval-every")
     ap.add_argument("--w-inter", type=float, default=W_INTER)

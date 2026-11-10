@@ -56,6 +56,7 @@ are numerical simulations; there is no experimental data in this repository.
 | `plot_roc.py` | detection rate against false-alarm rate |
 | `grad_partition_evidence.py` | roughness of the shared band against the exclusive band |
 | `dataset_probe.py` | image size and distinct-image census of the four datasets |
+| `scene_scan.py`, `run_scene_parsing.py` | scene construction, sliding-window sweep and the scene-parsing statistics |
 
 ## Setup
 
@@ -67,6 +68,9 @@ python -m d2nn.shapes          # writes ./data/synthetic_shapes_train and _test
 MNIST, Fashion-MNIST and EMNIST are downloaded to `./data` on first use. A CUDA GPU is strongly
 recommended: one first-stage sub-network takes a few minutes and a full second-stage fine-tuning
 run takes on the order of an hour.
+
+Run every command from this folder: `d2nn/config.py` resolves the datasets as `./data`, so calling
+a script from another working directory makes it try to download the datasets again.
 
 ## Training
 
@@ -120,10 +124,56 @@ python train_stage2_tiled_control.py --epochs 1000 --seed 0     # equal-area non
 ```
 
 The relative weight of the two branches matters more than their absolute values, because every
-step is clipped to unit gradient norm: with `--alpha-ce 30` the classification term takes about
-half of the step and both branches stall, whereas `--alpha-ce 300` gives it about ninety percent
-and the confinement term still keeps the energy of misplaced inputs down. At 300 epochs the second
-setting reaches 90.3% mean accuracy, and 90.5% when all four windows are illuminated at once.
+step is clipped to unit gradient norm. Measured shares of the unit step are 52% classification
+against 38% confinement at `--alpha-ce 30`, 79% against 17% at 100, and 92% against 7% at 300.
+Splitting the step evenly between the two conflicting gradients stalls both of them; giving
+classification the larger share improves accuracy and confinement at the same time, which is why
+300 is the default. Halving the confinement weight instead buys only 1.4 accuracy points and
+roughly doubles the misplaced-input ring energy, so it is not the useful knob.
+
+## Results of the revised device
+
+Defaults above, 1000 epochs, three seeds, official test splits, 100 images per class.
+
+| quantity | MNIST | Fashion | EMNIST | Shapes | mean |
+| --- | --- | --- | --- | --- | --- |
+| single illuminated sub-aperture | 95.5 | 81.4 | 87.6 | 100.0 | 91.12 ± 0.06 |
+| all four illuminated at once | 95.8 | 82.5 | 88.1 | 100.0 | 91.6 |
+| power on own detector spots, correct input | 23.3% | 20.2% | 18.9% | 73.7% | |
+| same, input placed in the wrong window | 13.5% | 13.3% | 14.1% | 31.6% | |
+| confinement ratio, dB | +2.4 | +1.8 | +1.3 | +3.7 | +2.3 |
+| per-channel threshold | 0.0247 | 0.0179 | 0.0205 | 0.2020 | |
+| detection rate at that threshold | 0.915 | 0.840 | 0.747 | 0.899 | |
+| false-alarm rate, misplaced input | 0.102 | 0.183 | 0.108 | 0.050 | |
+
+Accuracy is flat in `k`: 91.8, 91.7, 91.7 and 91.6% for one to four illuminated sub-apertures,
+averaged over the three seeds. The equal-budget tiling control trained without the confinement
+term falls from 92.9% at k=1 to 70.8% at k=4, and the same tiling trained with it stays flat at
+87.6%, which is how the two contributions are separated in the response.
+
+Sliding-window scene parsing over a 2400 x 2400 scene with 240 objects, ten distinct test images
+per class, half-window steps (256 window positions). Two statistics are reported, because they
+answer different questions.
+
+| statistic | this work | without the confinement term |
+| --- | --- | --- |
+| object read correctly by its own quadrant | 77.9% (CI 72.3 to 82.7) | 58.3% (CI 52.0 to 64.4) |
+| the window with the strongest signal is the correct one | 60.0% (CI 53.7 to 66.0) | 21.3% (CI 16.6 to 26.9) |
+| foreign object claimed by the host quadrant | 0 of 659 reads | 0 of 659 reads |
+
+The first statistic assumes the reader knows which window position is the object's own; a 112 px
+object fits completely inside one 212 px quadrant patch of one window, so no object is counted
+twice. The second is the position-free version: the sweep keeps, for each object, the window that
+gave the strongest normalised readout and asks whether that one was also correct. It is the
+relevant number if the scene is parsed without prior knowledge of where the stage was when an
+object was centred, and the confinement term is what makes it survivable: 60.0% against 21.3%.
+Empty quadrants give a normalised readout of at most 0.0010, two orders of magnitude below a
+centred object.
+
+```
+python run_scene_parsing.py --ckpt device=checkpoints/<device>.pth --grid 8 --step 150
+python run_scene_parsing.py --grid 4 --step 300 --ckpt device=checkpoints/<device>.pth
+```
 
 `train_stage2_tiled_control.py` is the same recipe applied to four disjoint 150x150 squares, which
 separates what the anti-crosstalk term buys from what pixel sharing buys. `control_tiled_lib.py`

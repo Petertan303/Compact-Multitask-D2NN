@@ -8,7 +8,8 @@ same stage-2 recipe as the shared-aperture device:
   assignment), 64 own rows and 3x32 foreign rows;
   L = alpha_ce CE(gamma s_hat) + alpha_neg E_neg + alpha_bg E_bg
       + W_inter E_big-ring, the last term measured on the foreign rows only;
-  alpha_ce 30 with the normalised readout s_hat = S / P_out and gamma 300,
+alpha_ce 300 by default with the normalised readout s_hat = S / P_out and
+gamma 300,
   alpha_neg 40, alpha_bg 1e3, W_inter 1e3, Adam lr 0.1 with a linear decay to
   1e-6 over epochs x 4 steps, gradient clip 1.0, and a gradient freeze that
   lets only the focus square update.
@@ -38,7 +39,7 @@ REG = list(config.REGIONS)
 WRONG_FOR_CORNER = {"NW": "NE", "NE": "SW", "SW": "SE", "SE": "NW"}
 CKPT_DIR = os.path.join(HERE, "checkpoints")
 BATCH_OWN, BATCH_WRONG = 64, 32
-W_INTER, ALPHA_CE, ALPHA_NEG, ALPHA_BG, CE_SCALE = 1e3, 30.0, 40.0, 1e3, 3e2
+W_INTER, ALPHA_CE, ALPHA_NEG, ALPHA_BG, CE_SCALE = 1e3, 300.0, 40.0, 1e3, 3e2
 POS_TH, NEG_TH = 0.05, 0.01
 LR = 0.1
 
@@ -116,17 +117,23 @@ def target_parts(out_field, labels, pos, neg, host):
 
 
 def main():
+    global ALPHA_CE
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=1000)
     ap.add_argument("--eval-every", type=int, default=20)
     ap.add_argument("--save-every", type=int, default=100)
     ap.add_argument("--w-inter", type=float, default=W_INTER)
+    ap.add_argument("--alpha-ce", type=float, default=ALPHA_CE,
+                    help="classification weight; the shared-aperture device "
+                         "uses the same default.  The control quoted in the "
+                         "response was first run with --alpha-ce 30")
     ap.add_argument("--lr", type=float, default=LR)
     ap.add_argument("--sub-tag", default="ce",
                     help="stage-1 tag of the 150x150 square sub-networks")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name", default="tile150_lxt")
     a = ap.parse_args()
+    ALPHA_CE = a.alpha_ce
 
     os.makedirs(os.path.join(HERE, "checkpoints"), exist_ok=True)
     os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
@@ -159,7 +166,7 @@ def main():
                                         total_iters=a.epochs * len(REG))
     curve = []
     print("epochs=%d w_inter=%g alpha_ce=%g alpha_neg=%g alpha_bg=%g lr=%.2g"
-          % (a.epochs, a.w_inter, ALPHA_CE, ALPHA_NEG, ALPHA_BG, a.lr),
+          % (a.epochs, a.w_inter, a.alpha_ce, ALPHA_NEG, ALPHA_BG, a.lr),
           flush=True)
     t0 = time.time()
     for ep in range(a.epochs):
