@@ -161,6 +161,22 @@ def step_one_region(full, region, ds, pos, neg, opt, a, stats):
             alpha_anti_neg=base.ALPHA_ANTI, alpha_bg=a.alpha_bg)
     labels = all_labels[region]
     stats["ce"] = float(total.detach())
+    if a.alpha_xt > 0.0:
+        cv_xt = lit_batch(region, [region], ds, a.batch_own, DEV)[0]
+        out_xt = full(cv_xt.to(torch.complex64))
+        xt = losses.crosstalk_loss(out_xt, a.other_rings[region])
+        total = total + a.alpha_xt * xt
+        stats["xt"] = float(xt.detach())
+    if a.alpha_anti > 0.0:
+        # independent anti-crosstalk branch: foreign data (or a blank window)
+        # in this channel's own window, no label, all 20 spots must stay dark
+        acv, k_for, k_bla = negative_batch(region, subset, ds, a.batch_neg,
+                                          DEV, a.blank_share)
+        aout = full(acv.to(torch.complex64))
+        anti = losses.ring_suppression_loss(aout, a.rings[region])
+        total = total + a.alpha_anti * anti
+        stats["anti"] = float(anti.detach())
+        stats["n_for"], stats["n_bla"] = k_for, k_bla
     if a.gate_weight > 0:
         ncv, k_for, k_bla = negative_batch(region, subset, ds, a.batch_neg,
                                           DEV, a.blank_share)
@@ -266,6 +282,14 @@ def main():
     ap.add_argument("--layers", type=int, default=3)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--alpha-bg", type=float, default=1e3)
+    ap.add_argument("--alpha-xt", type=float, default=0.0,
+                    help="weight of the inter-task crosstalk term "
+                         "L_xt = E_other / E_tot, measured with this region's "
+                         "data alone in its own window (0 disables it)")
+    ap.add_argument("--alpha-anti", type=float, default=0.0,
+                    help="weight of the anti-crosstalk branch, where a foreign "
+                         "sample or a blank window sits in this channel's own "
+                         "window and all 20 of its spots must stay dark")
     ap.add_argument("--tth", type=float, default=0.2)
     ap.add_argument("--marg", type=float, default=0.05)
     ap.add_argument("--gate-mode", choices=("score", "margin"), default="score")
@@ -349,6 +373,12 @@ def main():
     else:
         full = base.build_init("merged", a.layers, a.sub_tag).to(DEV)
     pos, neg = base.build_masks300()
+    rings = {r: losses.spot_ring(pos[r], neg[r]) for r in REG}
+    a.rings = rings
+    a.other_rings = {
+        r: (torch.stack([rings[q] for q in REG if q != r]).amax(dim=0)
+            if len(REG) > 1 else torch.zeros_like(rings[r]))
+        for r in REG}
     ds_train = data.load_datasets(train=True)
     ds_test = data.load_datasets(train=False)
     opt = optim.Adam(full.parameters(), lr=LR)
@@ -367,16 +397,21 @@ def main():
     t0 = time.time()
     for ep in range(a.epochs):
         per_region = []
+        acc = {}
         if a.curriculum:
             order = [REG[i] for i in torch.multinomial(
                 w_tensor, len(REG), replacement=True).tolist()]
         else:
             order = list(REG)
         for r in order:
-            per_region.append(step_one_region(full, r, ds_train, pos, neg, opt, a,
-                                          stats))
+            one = {}
+            per_region.append(step_one_region(full, r, ds_train, pos, neg, opt,
+                                          a, one))
+            for k, v in one.items():
+                acc.setdefault(k, []).append(float(v))
             sched.step()
             opt.zero_grad()
+        stats = {k: float(np.mean(v)) for k, v in acc.items()}
         L = float(np.mean([x for x in per_region if x == x] or [float("nan")]))
         if (ep + 1) % a.eval_every == 0 or ep == a.epochs - 1:
             full.eval()
@@ -397,12 +432,15 @@ def main():
                 print("    curriculum: easiest %s -> weights %s"
                       % (easy, {k: round(v, 3) for k, v in curri_w.items()}),
                       flush=True)
-            print("  ep %4d L=%.0f ce=%.0f gate_own=%.4f gate_neg=%.4f "
+            print("  ep %4d L=%.0f ce=%.0f xt=%.5f anti=%.5f "
+                  "gate_own=%.4f gate_neg=%.4f "
                   "acc=%.1f%% tpr=%.2f far_for=%.2f far_blank=%.3f "
                   "score_own=%s | margin p50=%s p99for=%s TPR@mg=%.2f FAR@mg=%.3f "
                   "lr=%.1e [%.0fs]"
                   % (ep + 1, L if L == L else -1,
                      stats.get("ce", float("nan")),
+                     stats.get("xt", float("nan")),
+                     stats.get("anti", float("nan")),
                      stats.get("gate_own", float("nan")),
                      stats.get("gate_neg", float("nan")),
                      100 * ev["mean_acc"],
@@ -424,7 +462,9 @@ def main():
     json.dump({"arm": a.arm, "seed": a.seed, "tth": a.tth, "marg": a.marg,
                "name": name, "lr_anchor": a.lr_anchor,
                "gate_weight": a.gate_weight, "concurrent": a.concurrent,
-               "epochs": a.epochs, "alpha_bg": a.alpha_bg, "curve": curve},
+               "epochs": a.epochs, "alpha_bg": a.alpha_bg,
+               "alpha_xt": a.alpha_xt, "alpha_anti": a.alpha_anti,
+               "curve": curve},
               open(os.path.join(a.out_dir, "train_%s_s%d.json"
                                % (name, a.seed)), "w"), indent=1)
     print("done in %.0f s" % (time.time() - t0), flush=True)

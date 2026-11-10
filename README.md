@@ -46,6 +46,16 @@ are numerical simulations; there is no experimental data in this repository.
 | `eval_false_alarm.py` | response of each channel to empty and misplaced inputs |
 | `eval_aperture_budget.py` | pixel budget of the sharing layout and of the controls |
 | `eval_dataset_stats.py` | class counts of the four datasets as loaded |
+| `train_stage2_shared.py` | second stage used for the submitted device: classification branch plus anti-crosstalk branch |
+| `train_stage2_tiled_control.py` | the same second stage on four non-overlapping 150 x 150 squares |
+| `eval_tiled_control.py` | accuracy, confinement and false-alarm rates for the tiled control |
+| `eval_isolated_stage1.py` | accuracy of the four independent first-stage networks |
+| `error_bars.py` | confidence intervals for the reported rates and spread across seeds |
+| `calib_tau_transfer.py` | threshold calibrated on the training split, evaluated on the test split |
+| `viz_input_output.py`, `viz_tau_decision.py`, `viz_tiled_input_output.py` | input, detector plane and ten-class readout figures |
+| `plot_roc.py` | detection rate against false-alarm rate |
+| `grad_partition_evidence.py` | roughness of the shared band against the exclusive band |
+| `dataset_probe.py` | image size and distinct-image census of the four datasets |
 
 ## Setup
 
@@ -94,3 +104,49 @@ Every training script takes `--seed`; the first stage also takes `--regions`, `-
 `--epochs`. Splits are the published train/test splits of MNIST, Fashion-MNIST and EMNIST, and
 6000/1000 generated images per class for Shapes. Reported means are averaged over the four
 channels.
+
+## Scripts added for the revision
+
+The second stage used for the submitted device is `train_stage2_shared.py`. It trains the
+classification branch and the anti-crosstalk branch in the same pass: each row lights all four
+windows, 64 rows carry the channel's own data in its own window and are supervised, 96 rows carry
+foreign data in the wrong window and are penalised only by the energy that lands on the enlarged
+detector-spot footprint. The classification term uses the normalised differential readout
+`S_c / P_out` as logits, so the softmax does not saturate at the energies used here.
+
+```
+python train_stage2_shared.py --epochs 1000 --eval-every 20 --seed 0
+python train_stage2_tiled_control.py --epochs 1000 --seed 0     # equal-area non-overlapping control
+```
+
+The relative weight of the two branches matters more than their absolute values, because every
+step is clipped to unit gradient norm: with `--alpha-ce 30` the classification term takes about
+half of the step and both branches stall, whereas `--alpha-ce 300` gives it about ninety percent
+and the confinement term still keeps the energy of misplaced inputs down. At 300 epochs the second
+setting reaches 90.3% mean accuracy, and 90.5% when all four windows are illuminated at once.
+
+`train_stage2_tiled_control.py` is the same recipe applied to four disjoint 150x150 squares, which
+separates what the anti-crosstalk term buys from what pixel sharing buys. `control_tiled_lib.py`
+holds the geometry and readout of that device.
+
+Evaluation added for the reviewer questions:
+
+| script | what it answers |
+|---|---|
+| `eval_accuracy_far.py` | per-channel accuracy, and false-alarm rates for off-target and empty windows at three threshold calibrations, with the full threshold sweep stored in the json |
+| `error_bars.py` | Wilson intervals for every rate, and the spread across training seeds |
+| `eval_isolated_stage1.py` | the independent-networks row: the four first-stage quarter-disk networks, three seeds |
+| `eval_concurrent.py` | accuracy when one, two, three or four windows are illuminated at once |
+| `calib_tau_transfer.py` | whether a threshold calibrated on the training split transfers to the test split |
+| `viz_input_output.py`, `viz_tau_decision.py`, `viz_tiled_input_output.py` | input, detector plane, and the ten-class bar chart with the decision threshold drawn on it |
+| `plot_roc.py` | detection rate against false-alarm rate as the threshold varies |
+| `grad_partition_evidence.py` | measures the roughness of the shared band against the exclusive band, and the smoothing that phase averaging alone produces |
+| `dataset_probe.py` | per-class census of the four datasets, including image size and number of distinct images |
+
+```
+python eval_accuracy_far.py --ckpt shared=checkpoints/<device>.pth --n-per-class 100 --tau 0.2
+python error_bars.py --json results/accuracy_far.json
+python eval_isolated_stage1.py --n-per-class 100
+python eval_concurrent.py --geom petal --ckpt checkpoints/<device>.pth --n-per-class 100
+python grad_partition_evidence.py --trained checkpoints/<device>.pth
+```

@@ -24,6 +24,31 @@ def scale_target_to_input_energy(target: torch.Tensor,
     scale = torch.sqrt(input_l2_sq / (e + 1e-8))
     return target * scale.unsqueeze(1).unsqueeze(2)
 
+def spot_ring(mask_pos: torch.Tensor, mask_neg: torch.Tensor) -> torch.Tensor:
+    """Footprint of the 20 differential spots (10 positive + 10 negative) of
+    one channel, on the full canvas."""
+    return ((mask_pos.sum(dim=0) + mask_neg.sum(dim=0)) > 1e-2).float()
+
+def crosstalk_loss(out_field: torch.Tensor,
+                   other_ring: torch.Tensor) -> torch.Tensor:
+    """Fraction of the output power that falls on the detector spots of the
+    channels other than the one being driven.  This is the inter-task
+    crosstalk term L_xt = E_other / E_tot."""
+    I_out = torch.abs(out_field) ** 2
+    other_energy = (I_out * other_ring).flatten(start_dim=1).sum(dim=1)
+    total_energy = I_out.flatten(start_dim=1).sum(dim=1) + 1e-8
+    return (other_energy / total_energy).mean()
+
+def ring_suppression_loss(out_field: torch.Tensor,
+                          ring: torch.Tensor) -> torch.Tensor:
+    """Anti-crosstalk branch: the sample was placed in this channel's window
+    although it does not belong to it (or the window is blank), so none of
+    this channel's 20 detector spots may light up.  L_anti = E_ring / E_tot."""
+    I_out = torch.abs(out_field) ** 2
+    ring_energy = (I_out * ring).flatten(start_dim=1).sum(dim=1)
+    total_energy = I_out.flatten(start_dim=1).sum(dim=1) + 1e-8
+    return (ring_energy / total_energy).mean()
+
 def target_loss(out_field: torch.Tensor,
                 labels: torch.Tensor,
                 mask_pos: torch.Tensor,
